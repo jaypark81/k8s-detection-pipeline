@@ -1,0 +1,44 @@
+# falco/values.yaml
+# Falco Helm values for K8S-DETECTION-PIPELINE
+# JSON output enabled for Fluent Bit collection
+
+daemonset:
+  hostPID: true
+
+falcoctl:
+  artifact:
+    follow:
+      resources:
+        limits:
+          memory: 256Mi
+        requests:
+          memory: 64Mi
+    install:
+      resources:
+        limits:
+          memory: 256Mi
+        requests:
+          memory: 64Mi
+
+falco:
+  # Enable JSON output for Fluent Bit parsing
+  json_output: true
+  json_include_output_property: true
+  json_include_tags_property: true
+
+  log_stderr: true
+  log_level: info
+
+  # Fluent Bit collects from stdout
+  stdout_output:
+    enabled: true
+
+  # Disable HTTP output (not used)
+  http_output:
+    enabled: false
+
+  # Include Kubernetes and container metadata in every event
+  metadata_download:
+    max_mb: 100
+    chunk_wait_us: 1000
+    watch_freq_sec: 1

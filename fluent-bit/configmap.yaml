@@ -1,0 +1,177 @@
+# fluent-bit/configmap.yaml
+# Fluent Bit configuration for K8S-DETECTION-PIPELINE
+# Collects Falco alerts, Tetragon events, and K8s workload logs
+# Enriches all logs with Kubernetes metadata before sending to MSK
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: fluent-bit
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         5
+        Daemon        Off
+        Log_Level     info
+        Parsers_File  parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+
+    # ── Inputs ────────────────────────────────────────────────────────────────
+
+    # Falco alerts (JSON from stdout)
+    [INPUT]
+        Name              tail
+        Tag               falco.*
+        Path              /var/log/containers/falco-*.log
+        Parser            cri
+        DB                /var/log/flb_falco.db
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+    # Tetragon events (JSON from stdout)
+    [INPUT]
+        Name              tail
+        Tag               tetragon.*
+        Path              /var/log/containers/tetragon-*.log
+        Parser            cri
+        DB                /var/log/flb_tetragon.db
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+    # K8s workload logs (all other namespaces)
+    # Excludes kube-system, falco, elk, monitoring namespaces
+    [INPUT]
+        Name              tail
+        Tag               k8s.*
+        Path              /var/log/containers/*.log
+        Exclude_Path      /var/log/containers/falco-*.log,/var/log/containers/tetragon-*.log,/var/log/containers/*_kube-system_*.log,/var/log/containers/*_elk_*.log,/var/log/containers/*_monitoring_*.log
+        Parser            cri
+        DB                /var/log/flb_k8s.db
+        Mem_Buf_Limit     20MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+    # ── Kubernetes Metadata Enrichment ────────────────────────────────────────
+    # Attaches pod labels, annotations, namespace, app name, owner info
+
+    [FILTER]
+        Name                kubernetes
+        Match               falco.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     falco.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_parsed
+        Keep_Log            Off
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+        Labels              On
+        Annotations         On
+
+    [FILTER]
+        Name                kubernetes
+        Match               tetragon.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     tetragon.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_parsed
+        Keep_Log            Off
+        Labels              On
+        Annotations         On
+
+    [FILTER]
+        Name                kubernetes
+        Match               k8s.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     k8s.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_parsed
+        Keep_Log            Off
+        Labels              On
+        Annotations         On
+
+    # Add cluster name and source type to all records
+    [FILTER]
+        Name    record_modifier
+        Match   falco.*
+        Record  cluster_name ${CLUSTER_NAME}
+        Record  source_type  falco
+
+    [FILTER]
+        Name    record_modifier
+        Match   tetragon.*
+        Record  cluster_name ${CLUSTER_NAME}
+        Record  source_type  tetragon
+
+    [FILTER]
+        Name    record_modifier
+        Match   k8s.*
+        Record  cluster_name ${CLUSTER_NAME}
+        Record  source_type  k8s
+
+    # ── Outputs → MSK (Kafka) ──────────────────────────────────────────────────
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         falco.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        ${KAFKA_TOPIC_FALCO}
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         tetragon.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        ${KAFKA_TOPIC_TETRAGON}
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         k8s.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        ${KAFKA_TOPIC_K8S}
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+  parsers.conf: |
+    # CRI log format parser (used by containerd/EKS)
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+
+    # JSON parser for pre-formatted logs
+    [PARSER]
+        Name        json
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z

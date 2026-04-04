@@ -1,0 +1,125 @@
+# pod-security-annotator/k8s/manifests.yaml
+# RBAC + Deployment for Pod Security Annotator
+
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-security-annotator
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: pod-security-annotator
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+
+---
+# ClusterRole — needs read access to pods/networkpolicies,
+# and patch access to pods (annotations only)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-security-annotator
+  labels:
+    app.kubernetes.io/name: pod-security-annotator
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-security-annotator
+  labels:
+    app.kubernetes.io/name: pod-security-annotator
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pod-security-annotator
+subjects:
+  - kind: ServiceAccount
+    name: pod-security-annotator
+    namespace: kube-system
+
+---
+# Deployment — single replica is enough (watch API is not load-balanced)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-security-annotator
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: pod-security-annotator
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pod-security-annotator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pod-security-annotator
+        app.kubernetes.io/part-of: k8s-detection-pipeline
+    spec:
+      serviceAccountName: pod-security-annotator
+
+      # Ensure only one instance runs at a time
+      # Use leader election if scaling up in the future
+      terminationGracePeriodSeconds: 10
+
+      containers:
+        - name: annotator
+          # Replace with your ECR image after build
+          image: ${ECR_REGISTRY}/pod-security-annotator:latest
+          imagePullPolicy: Always
+
+          env:
+            # Comma-separated list of namespaces to skip
+            - name: SKIP_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  name: pod-security-annotator-config
+                  key: SKIP_NAMESPACES
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+          # Read-only root filesystem for security
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+
+      # Do not mount SA token into the pod spec unnecessarily
+      # (we use the auto-mounted token via in-cluster config)
+      automountServiceAccountToken: true
+
+---
+# ConfigMap — non-sensitive settings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-security-annotator-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: pod-security-annotator
+    app.kubernetes.io/part-of: k8s-detection-pipeline
+data:
+  # Namespaces whose pods will not be annotated
+  SKIP_NAMESPACES: "kube-system,kube-public,kube-node-lease"
