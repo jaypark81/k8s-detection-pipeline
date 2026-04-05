@@ -1,0 +1,28 @@
+title: Kubernetes ClusterRoleBinding Created
+status: experimental
+description: |
+    A new ClusterRoleBinding was successfully created.
+    Attackers commonly bind cluster-admin to a compromised
+    service account to establish persistent privilege.
+author: jaypark81
+date: 2026-04-04
+logsource:
+    product: kubernetes
+    service: audit
+detection:
+    selection:
+        verb: create
+        objectRef.resource: clusterrolebindings
+        responseStatus.code:
+            - 200
+            - 201
+    filter_system:
+        user.username|startswith: 'system:serviceaccount:kube-system'
+    condition: selection and not filter_system
+falsepositives:
+    - Initial cluster setup
+    - Helm chart deployments with RBAC resources
+level: high
+tags:
+    - attack.privilege_escalation
+    - attack.t1078.001

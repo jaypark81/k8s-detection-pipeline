@@ -1,3 +1,6 @@
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![Terraform](https://img.shields.io/badge/IaC-Terraform-purple)
+![ECS](https://img.shields.io/badge/Schema-ECS%208.x-orange)
 # K8S-DETECTION-PIPELINE
 
 A Kubernetes-native security detection pipeline that collects, enriches, and ships
@@ -284,6 +287,13 @@ kubernetes.audit.objectRef.subresource: exec
 event.action: create AND
 kubernetes.audit.objectRef.resource: clusterrolebindings
 ```
+
+---
+## Sigma Detection Rules
+
+Platform-independent detection rules mapped to MITRE ATT&CK for Containers.
+See [`sigma-rules/`](./sigma-rules/) for Secret Enumeration, Pod Exec, 
+ClusterRoleBinding creation rules.
 
 ---
 
