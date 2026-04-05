@@ -1,0 +1,23 @@
+title: Kubernetes Pod Exec Command
+status: stable
+description: |
+    A command was sent to a running pod via exec API.
+    May indicate attacker RCE or internal reconnaissance.
+author: jaypark81
+date: 2026-04-04
+logsource:
+    product: kubernetes
+    service: audit
+detection:
+    selection:
+        verb: create
+        objectRef.resource: pods
+        objectRef.subresource: exec
+    condition: selection
+falsepositives:
+    - Legitimate operational debugging sessions
+    - Consider filtering by namespace for high-traffic clusters
+level: high
+tags:
+    - attack.execution
+    - attack.t1609
