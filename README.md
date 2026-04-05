@@ -7,11 +7,13 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
 
 ## Architecture
 
+### Pipeline 1 — Runtime Event Collection (Fluent Bit)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        EKS Cluster                                  │
 │                                                                     │
-│  ┌─────────────────┐   ┌─────────────-────┐   ┌──────────────────┐  │
+│  ┌─────────────────┐   ┌──────────────────┐   ┌──────────────────┐  │
 │  │ Pod Security    │   │     Falco        │   │    Tetragon      │  │
 │  │ Annotator       │   │  (DaemonSet)     │   │  (DaemonSet)     │  │
 │  │                 │   │                  │   │                  │  │
@@ -20,47 +22,86 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
 │  │ annotations     │   │ → stdout (JSON)  │   │ → stdout (JSON)  │  │
 │  └────────┬────────┘   └────────┬─────────┘   └────────┬─────────┘  │
 │           │ security.k8s.io/*   │                      │            │
-│           ▼                     ▼                      ▼            │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                  Fluent Bit (DaemonSet)                     │    │
-│  │                                                             │    │
-│  │  INPUT: tail /var/log/containers/*.log                      │    │
-│  │  FILTER: kubernetes (pod metadata + security annotations)   │    │
-│  │  FILTER: record_modifier (cluster_name, source_type)        │    │
-│  │  OUTPUT: Kafka (siem-falco / siem-tetragon / siem-k8s)      │    │
-│  └─────────────────────────┬───────────────────────────────────┘    │
-│                            │                                        │
-└────────────────────────────│────────────────────────────────────────┘
+│           │                     ▼                      ▼            │
+│           │          ┌──────────────────────────────────────────┐   │
+│           └─────────►│           Fluent Bit (DaemonSet)         │   │
+│                      │                                          │   │
+│                      │  INPUT:  tail /var/log/containers/*.log  │   │
+│                      │  FILTER: kubernetes (metadata + annots)  │   │
+│                      │  FILTER: record_modifier (source_type)   │   │
+│                      │  OUTPUT: Kafka                           │   │
+│                      └────────────────────┬─────────────────────┘   │
+└───────────────────────────────────────────│─────────────────────────┘
+                                            │
+                                            ▼
+                               ┌────────────────────────┐
+                               │        AWS MSK         │
+                               │                        │
+                               │      siem-falco        │
+                               │      siem-tetragon     │
+                               │      siem-k8s          │
+                               └───────────┬────────────┘
+                                           │
+                                           ▼
+                               ┌────────────────────────┐
+                               │        Logstash        │
+                               │                        │
+                               │  0200_filter_falco     │
+                               │  0201_filter_tetragon  │
+                               │  0202_filter_k8s       │
+                               └───────────┬────────────┘
+                                           │
+                                           ▼
+                               ┌────────────────────────┐
+                               │     Elasticsearch      │
+                               │                        │
+                               │   logs-falco-siem      │
+                               │   logs-tetragon-siem   │
+                               │   logs-kubernetes-siem │
+                               └────────────────────────┘
+```
+
+### Pipeline 2 — K8s Audit Log Collection (CloudWatch → Lambda)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        EKS Cluster                                  │
+│                                                                     │
+│   kube-apiserver ──► CloudWatch Logs (/aws/eks/<cluster>/cluster)   │
+│                                                                     │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │ Subscription Filter (push-based)
+                              ▼
+                 ┌────────────────────────┐
+                 │        Lambda          │
+                 │  cloudwatch-to-kafka   │
+                 │                        │
+                 │  - IRSA (no static     │
+                 │    credentials)        │
+                 │  - VPC-attached        │
+                 │  - injects source_type │
+                 └───────────┬────────────┘
                              │
                              ▼
-                    ┌─────────────────┐
-                    │   AWS MSK       │
-                    │   (Kafka)       │
-                    │                 │
-                    │  siem-falco     │
-                    │  siem-tetragon  │
-                    │  siem-k8s       │
-                    └────────┬────────┘
+                 ┌────────────────────────┐
+                 │        AWS MSK         │
+                 │                        │
+                 │    siem-k8s-audit      │
+                 └───────────┬────────────┘
                              │
                              ▼
-                    ┌─────────────────┐
-                    │    Logstash     │
-                    │                 │
-                    │  0000_input     │ ← Kafka consumer
-                    │  0200_falco     │ ← ECS mapping
-                    │  0201_tetragon  │ ← ECS mapping
-                    │  0202_k8s       │ ← ECS mapping + security fields
-                    │  9999_output    │ → Data Stream
-                    └────────┬────────┘
+                 ┌────────────────────────┐
+                 │        Logstash        │
+                 │                        │
+                 │  0203_filter_k8s_audit │
+                 └───────────┬────────────┘
                              │
                              ▼
-                  ┌─────────────────────┐
-                  │ Elasticsearch       │
-                  │                     │
-                  │ logs-falco-siem     │
-                  │ logs-tetragon-siem  │
-                  │ logs-kubernetes-siem│
-                  └─────────────────────┘
+                 ┌────────────────────────┐
+                 │     Elasticsearch      │
+                 │                        │
+                 │  logs-kubernetes-siem  │
+                 └────────────────────────┘
 ```
 
 ---
@@ -101,6 +142,42 @@ DaemonSet that collects container logs from every node.
 - **Filter**: `record_modifier` — adds `cluster_name` and `source_type`
 - **Output**: Kafka (MSK, unauthenticated on internal network)
 
+### K8s Audit Log Pipeline
+
+EKS API server audit logs are collected via CloudWatch Logs and forwarded to Kafka
+using a Lambda function, then normalized to ECS by Logstash.
+
+**Collection flow:**
+```
+kube-apiserver
+    → CloudWatch Logs (/aws/eks/<cluster>/cluster)
+    → Lambda (Subscription Filter, push-based, real-time)
+    → MSK Kafka (siem-k8s-audit)
+    → Logstash (0203_filter_k8s_audit.conf)
+    → Elasticsearch (siem-k8s-audit)
+```
+
+**Infrastructure:**
+- Lambda runs inside VPC with IRSA — no static credentials
+- CloudWatch Subscription Filter triggers Lambda in real-time (no polling)
+- Deployed and managed via Terraform
+
+**ECS Field Mapping:**
+
+| ECS Field | Source Field |
+|---|---|
+| `event.action` | `verb` |
+| `event.outcome` | `responseStatus.code` (2xx → success, 4xx → failure) |
+| `user.name` | `user.username` |
+| `source.ip` | `sourceIPs` |
+| `url.path` | `requestURI` |
+| `kubernetes.audit.objectRef.resource` | `objectRef.resource` |
+| `kubernetes.audit.objectRef.subresource` | `objectRef.subresource` |
+| `kubernetes.audit.objectRef.namespace` | `objectRef.namespace` |
+| `kubernetes.audit.responseStatus.code` | `responseStatus.code` |
+| `kubernetes.audit.authorization.decision` | `annotations.authorization.k8s.io/decision` |
+| `kubernetes.audit.authorization.reason` | `annotations.authorization.k8s.io/reason` |
+
 ### Logstash Pipeline
 
 | File | Role |
@@ -109,6 +186,7 @@ DaemonSet that collects container logs from every node.
 | `0200_filter_falco.conf` | ECS mapping for Falco alerts — maps to `rule.*`, `process.*`, `event.kind: alert` |
 | `0201_filter_tetragon.conf` | ECS mapping for Tetragon events — maps to `process.*`, event type routing |
 | `0202_filter_k8s.conf` | ECS mapping for K8s workload logs — promotes `security.k8s.io/*` to `kubernetes.security.*` |
+| `0203_filter_k8s_audit.conf` | ECS mapping for K8s Audit Log — maps to `event.action`, `user.name`, `kubernetes.audit.*` |
 | `9999_output.conf` | Routes to Elasticsearch Data Streams or regular indices |
 
 ### ECS Field Mapping
@@ -137,6 +215,7 @@ kubernetes.security.*        ← security.k8s.io/* annotations
 | `logs-falco-siem` | Falco alerts | siem policy |
 | `logs-tetragon-siem` | Tetragon process events | siem policy |
 | `logs-kubernetes-siem` | K8s workload logs | siem policy |
+| `siem-k8s-audit` | K8s API server audit logs | siem policy |
 
 ---
 
@@ -156,14 +235,19 @@ K8S-DETECTION-PIPELINE/
 │   ├── Dockerfile
 │   └── k8s/
 │       └── manifests.yaml           # RBAC + Deployment
+├── lambda/
+│   └── cloudwatch_to_kafka/
+│       ├── main.py                  # CloudWatch → Kafka forwarder
+│       ├── requirements.txt
+│       └── builder.sh               # Lambda layer build script
 └── logstash/
     └── pipeline/
         ├── 0000_input.conf
         ├── 0200_filter_falco.conf
         ├── 0201_filter_tetragon.conf
         ├── 0202_filter_k8s.conf
+        ├── 0203_filter_k8s_audit.conf
         └── 9999_output.conf
-
 ```
 
 ---
@@ -186,12 +270,25 @@ kubernetes.security.host_path_sensitive: true AND event.module: falco
 kubernetes.security.automount_sa_token: true AND
 kubernetes.security.run_as_non_root: false AND
 event.module: falco
+
+# Secret enumeration via kubectl
+kubernetes.audit.objectRef.resource: secrets AND
+event.action: (get OR list) AND
+event.outcome: success
+
+# Pod exec (kubectl exec)
+kubernetes.audit.objectRef.resource: pods AND
+kubernetes.audit.objectRef.subresource: exec
+
+# ClusterRoleBinding created
+event.action: create AND
+kubernetes.audit.objectRef.resource: clusterrolebindings
 ```
 
 ---
 
 ## License
 
-Copyright 2026 Juyong Park
+Copyright 2026 jaypark81
 Licensed under the Apache License, Version 2.0.
 See LICENSE for details.
