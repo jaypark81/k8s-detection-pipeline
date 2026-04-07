@@ -112,8 +112,17 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
 ## Components
 
 ### Pod Security Annotator
-A Python controller that watches all pods and patches `security.k8s.io/*` annotations
-based on the pod spec. This enables Fluent Bit to include security context in every log event.
+
+EKS does not expose the control plane, so API server audit logs are shipped via CloudWatch Logs
+rather than collected directly. This means audit log events like `kubectl exec`, secret enumeration, and 
+RBAC changes arrive with no pod-level security context. You cannot tell from the audit log alone
+whether the pod involved was privileged, had hostPath mounts, or had a ServiceAccount token auto-mounted.
+
+The Pod Security Annotator solves this by running as a watch controller that continuously patches
+`security.k8s.io/*` annotations onto every pod based on its spec. Because Fluent Bit reads these
+annotations when it collects container logs, and because the audit log pipeline correlates events
+by pod identity, every event like runtime logs, Falco alerts, Tetragon traces, and audit logs ends
+up carrying the same security context without any join at query time.
 
 **Annotations added:**
 
