@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-ANNOTATION_PREFIX = "security.k8s.io"
+ANNOTATION_PREFIX = "observed.k8s.io"
 
 # Host paths considered sensitive for extra flagging
 SENSITIVE_HOST_PATHS = {
