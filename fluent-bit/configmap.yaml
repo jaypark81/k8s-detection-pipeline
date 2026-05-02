@@ -60,7 +60,7 @@ data:
         Refresh_Interval  5
 
     # ── Kubernetes Metadata Enrichment ────────────────────────────────────────
-    # Attaches pod labels, annotations, namespace, app name, owner info
+    # Attaches pod labels, namespace, app name, owner info
 
     [FILTER]
         Name                kubernetes
@@ -75,7 +75,7 @@ data:
         K8S-Logging.Parser  On
         K8S-Logging.Exclude Off
         Labels              On
-        Annotations         On
+        Annotations         Off
 
     [FILTER]
         Name                kubernetes
@@ -88,7 +88,7 @@ data:
         Merge_Log_Key       log_parsed
         Keep_Log            Off
         Labels              On
-        Annotations         On
+        Annotations         Off
 
     [FILTER]
         Name                kubernetes
@@ -101,7 +101,7 @@ data:
         Merge_Log_Key       log_parsed
         Keep_Log            Off
         Labels              On
-        Annotations         On
+        Annotations         Off
 
     # Add cluster name and source type to all records
     [FILTER]

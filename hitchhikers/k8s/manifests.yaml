@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hitchhiker-sa
+  namespace: hitchhiker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hitchhiker-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hitchhiker-binding
+subjects:
+  - kind: ServiceAccount
+    name: hitchhiker-sa
+    namespace: hitchhiker
+roleRef:
+  kind: ClusterRole
+  name: hitchhiker-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hitchhiker-webhook-svc
+  namespace: hitchhiker
+spec:
+  selector:
+    app: hitchhiker-webhook
+  ports:
+    - port: 443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hitchhiker-webhook
+  namespace: hitchhiker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hitchhiker-webhook
+  template:
+    metadata:
+      labels:
+        app: hitchhiker-webhook
+    spec:
+      serviceAccountName: hitchhiker-sa
+      nodeName: kuber-1
+      containers:
+        - name: webhook
+          image: hitchhiker-webhook:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8443
+          env:
+            - name: CLUSTER_NAME
+              value: "your-cluster-name"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: hitchhiker-tls-secret
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: hitchhiker-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: hitchhiker/hitchhiker-tls
+webhooks:
+  - name: hitchhiker.webhook.svc
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    clientConfig:
+      service:
+        name: hitchhiker-webhook-svc
+        namespace: hitchhiker
+        path: "/mutate"
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: "*"
