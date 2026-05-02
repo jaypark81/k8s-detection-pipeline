@@ -20,9 +20,12 @@ def enrich(response: dict):
         if not uid:
             pod_template_hash = meta.get('labels', {}).get('pod-template-hash', '')
             namespace = req.get('namespace', '')
-            uid,name = _resolve_uid(pod_template_hash, namespace)
-            if not uid:
-                logger.error("[SKIP] uid resolve failed")
+            if pod_template_hash:
+                uid, name = _resolve_uid(pod_template_hash, namespace)
+            elif name:
+                uid = _resolve_uid_by_name(name, namespace)
+            else:
+                logger.error("[SKIP] cannot resolve uid")
                 return
         namespace = req.get('namespace', '')
         username = req['userInfo']['username']
@@ -105,5 +108,19 @@ def _resolve_uid(pod_template_hash: str, namespace: str) -> str:
         if pods.items:
             return pods.items[0].metadata.uid, pods.items[0].metadata.name
         logger.warning(f"[RETRY {attempt+1}] uid not resolved yet")
+        time.sleep(1)
+    return ''
+
+def _resolve_uid_by_name(name: str, namespace: str) -> str:
+    config.load_incluster_config()
+    v1 = client.CoreV1Api()
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            pod = v1.read_namespaced_pod(name=name, namespace=namespace)
+            if pod.metadata.uid:
+                return pod.metadata.uid
+        except Exception as e:
+            logger.warning(f"[RETRY {attempt+1}] {e}")
         time.sleep(1)
     return ''
