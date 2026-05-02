@@ -1,6 +1,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![Terraform](https://img.shields.io/badge/IaC-Terraform-purple)
 ![ECS](https://img.shields.io/badge/Schema-ECS%208.x-orange)
+
 # K8S-DETECTION-PIPELINE
 
 A Kubernetes-native security detection pipeline that collects, enriches, and ships
@@ -17,51 +18,52 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
 │                        EKS Cluster                                  │
 │                                                                     │
 │  ┌─────────────────┐   ┌──────────────────┐   ┌──────────────────┐  │
-│  │ Pod Security    │   │     Falco        │   │    Tetragon      │  │
-│  │ Annotator       │   │  (DaemonSet)     │   │  (DaemonSet)     │  │
-│  │                 │   │                  │   │                  │  │
-│  │ Watches pods    │   │ syscall + K8s    │   │ eBPF process     │  │
-│  │ Patches security│   │ audit events     │   │ tracing          │  │
-│  │ annotations     │   │ → stdout (JSON)  │   │ → stdout (JSON)  │  │
+│  │   Hitchhiker    │   │     Falco        │   │    Tetragon      │  │
+│  │ (Mutating       │   │  (DaemonSet)     │   │  (DaemonSet)     │  │
+│  │  Admission      │   │                  │   │                  │  │
+│  │  Webhook)       │   │ syscall + K8s    │   │ eBPF process     │  │
+│  │                 │   │ audit events     │   │ tracing          │  │
+│  │ Pod metadata    │   │ → stdout (JSON)  │   │ → stdout (JSON)  │  │
+│  │ → Redis store   │   │                  │   │                  │  │
 │  └────────┬────────┘   └────────┬─────────┘   └────────┬─────────┘  │
-│           │ security.k8s.io/*   │                      │            │
-│           │                     ▼                      ▼            │
-│           │          ┌──────────────────────────────────────────┐   │
-│           └─────────►│           Fluent Bit (DaemonSet)         │   │
-│                      │                                          │   │
-│                      │  INPUT:  tail /var/log/containers/*.log  │   │
-│                      │  FILTER: kubernetes (metadata + annots)  │   │
-│                      │  FILTER: record_modifier (source_type)   │   │
-│                      │  OUTPUT: Kafka                           │   │
-│                      └────────────────────┬─────────────────────┘   │
-└───────────────────────────────────────────│─────────────────────────┘
+│           │                     │                      │            │
+│           ▼                     ▼                      ▼            │
+│        Redis          ┌──────────────────────────────────────────┐  │
+│                       │           Fluent Bit (DaemonSet)         │  │
+│                       │                                          │  │
+│                       │  INPUT:  tail /var/log/containers/*.log  │  │
+│                       │  FILTER: kubernetes (metadata)           │  │
+│                       │  FILTER: record_modifier (source_type)   │  │
+│                       │  OUTPUT: Kafka                           │  │
+│                       └────────────────────┬─────────────────────┘  │
+└────────────────────────────────────────────│────────────────────────┘
+                                             │
+                                             ▼
+                                ┌────────────────────────┐
+                                │        AWS MSK         │
+                                │                        │
+                                │      siem-falco        │
+                                │      siem-tetragon     │
+                                │      siem-k8s          │
+                                └───────────┬────────────┘
                                             │
                                             ▼
-                               ┌────────────────────────┐
-                               │        AWS MSK         │
-                               │                        │
-                               │      siem-falco        │
-                               │      siem-tetragon     │
-                               │      siem-k8s          │
-                               └───────────┬────────────┘
-                                           │
-                                           ▼
-                               ┌────────────────────────┐
-                               │        Logstash        │
-                               │                        │
-                               │  0200_filter_falco     │
-                               │  0201_filter_tetragon  │
-                               │  0202_filter_k8s       │
-                               └───────────┬────────────┘
-                                           │
-                                           ▼
-                               ┌────────────────────────┐
-                               │     Elasticsearch      │
-                               │                        │
-                               │   logs-falco-siem      │
-                               │   logs-tetragon-siem   │
-                               │   logs-kubernetes-siem │
-                               └────────────────────────┘
+                                ┌────────────────────────┐
+                                │        Logstash        │
+                                │                        │
+                                │  0200_filter_falco     │
+                                │  0201_filter_tetragon  │  ◄── Redis lookup
+                                │  0202_filter_k8s       │      (planned)
+                                └───────────┬────────────┘
+                                            │
+                                            ▼
+                                ┌────────────────────────┐
+                                │     Elasticsearch      │
+                                │                        │
+                                │   logs-falco-siem      │
+                                │   logs-tetragon-siem   │
+                                │   logs-kubernetes-siem │
+                                └────────────────────────┘
 ```
 
 ### Pipeline 2 — K8s Audit Log Collection (CloudWatch → Lambda)
@@ -96,7 +98,8 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
                  ┌────────────────────────┐
                  │        Logstash        │
                  │                        │
-                 │  0203_filter_k8s_audit │
+                 │  0203_filter_k8s_audit │  ◄── Redis lookup
+                 │                        │      (planned)
                  └───────────┬────────────┘
                              │
                              ▼
@@ -111,46 +114,41 @@ runtime security events from Falco, Tetragon, and workload logs to Elasticsearch
 
 ## Components
 
-### Pod Security Annotator
+### Hitchhiker
 
-EKS does not expose the control plane, so API server audit logs are shipped via CloudWatch Logs
-rather than collected directly. This means audit log events like `kubectl exec`, secret enumeration, and 
-RBAC changes arrive with no pod-level security context. You cannot tell from the audit log alone
-whether the pod involved was privileged, had hostPath mounts, or had a ServiceAccount token auto-mounted.
+Hitchhiker is a Kubernetes admission webhook that enriches security events with pod-level context.
+It captures metadata from the webhook payload on Pod CREATE and UPDATE events and stores it in
+a datastore. Downstream pipelines look up this metadata by pod UID to correlate security events
+with workload context without any join at query time.
 
-The Pod Security Annotator solves this by running as a watch controller that continuously patches
-`security.k8s.io/*` annotations onto every pod based on its spec. Because Fluent Bit reads these
-annotations when it collects container logs, and because the audit log pipeline correlates events
-by pod identity, every event like runtime logs, Falco alerts, Tetragon traces, and audit logs ends
-up carrying the same security context without any join at query time.
+The core problem it solves: runtime security events from Falco, Tetragon, and audit logs carry
+a Pod UID or name, but no security context. Without enrichment, you cannot tell from an alert
+alone whether the pod was privileged, had hostPath mounts, or used a sensitive ServiceAccount.
+Hitchhiker captures that context on Pod CREATE and UPDATE events and makes it available for
+downstream enrichment.
 
-**Annotations added:**
+**Metadata collected:** See [ECS Field Mapping](#ecs-field-mapping) section below.
 
-| Annotation | Description |
+**Redis key format:**
+
+| Key | Purpose |
 |---|---|
-| `security.k8s.io/privileged` | Whether any container runs as privileged |
-| `security.k8s.io/host-pid` | hostPID enabled |
-| `security.k8s.io/host-network` | hostNetwork enabled |
-| `security.k8s.io/host-ipc` | hostIPC enabled |
-| `security.k8s.io/host-path` | hostPath volumes present |
-| `security.k8s.io/host-path-mounts` | hostPath mount paths |
-| `security.k8s.io/host-path-sensitive` | Sensitive paths (/etc, /proc, etc.) |
-| `security.k8s.io/capabilities-added` | Added Linux capabilities |
-| `security.k8s.io/allow-privilege-escalation` | allowPrivilegeEscalation |
-| `security.k8s.io/run-as-non-root` | runAsNonRoot |
-| `security.k8s.io/run-as-user` | runAsUser |
-| `security.k8s.io/automount-sa-token` | automountServiceAccountToken |
-| `security.k8s.io/network-policy-applied` | NetworkPolicy covers this pod |
-| `security.k8s.io/service-account` | ServiceAccount name |
-| `security.k8s.io/container-ports` | Declared container ports |
-| `security.k8s.io/image-tag-latest` | Uses :latest tag |
-| `security.k8s.io/image-pull-policy` | Image pull policy |
+| `hitchhiker-k8s-{pod-uid}` | Primary key — UID is globally unique across clusters |
+| `hitchhiker-k8s-{cluster_name}/{namespace}/{name}` | Secondary key — for audit log lookup where UID is absent |
+
+The secondary key uses `CLUSTER_NAME` environment variable to avoid collision in multi-cluster environments.
+
+**UID resolution:** Pods created via Deployment → ReplicaSet arrive at the webhook before
+the API server assigns a UID. In this case, Hitchhiker resolves the UID post-admission by
+querying the K8s API using `pod-template-hash` as a label selector, then stores the metadata
+under both keys.
 
 ### Fluent Bit
+
 DaemonSet that collects container logs from every node.
 
 - **Input**: `tail` on `/var/log/containers/*.log` — separate inputs for Falco, Tetragon, and workload logs
-- **Filter**: `kubernetes` — enriches with pod labels, annotations (including security.k8s.io/*), namespace, node info
+- **Filter**: `kubernetes` — enriches with pod labels, namespace, node info
 - **Filter**: `record_modifier` — adds `cluster_name` and `source_type`
 - **Output**: Kafka (MSK, unauthenticated on internal network)
 
@@ -197,13 +195,18 @@ kube-apiserver
 | `0000_input.conf` | Kafka consumer for all siem-* topics |
 | `0200_filter_falco.conf` | ECS mapping for Falco alerts — maps to `rule.*`, `process.*`, `event.kind: alert` |
 | `0201_filter_tetragon.conf` | ECS mapping for Tetragon events — maps to `process.*`, event type routing |
-| `0202_filter_k8s.conf` | ECS mapping for K8s workload logs — promotes `security.k8s.io/*` to `kubernetes.security.*` |
+| `0202_filter_k8s.conf` | ECS mapping for K8s workload logs |
 | `0203_filter_k8s_audit.conf` | ECS mapping for K8s Audit Log — maps to `event.action`, `user.name`, `kubernetes.audit.*` |
 | `9999_output.conf` | Routes to Elasticsearch Data Streams or regular indices |
+
+> **Planned:** Logstash Ruby plugin will look up `hitchhiker-k8s-{pod-uid}` from Redis
+> and inject Hitchhiker metadata into each event at pipeline time.
 
 ### ECS Field Mapping
 
 All events are mapped to [Elastic Common Schema (ECS) 8.x](https://www.elastic.co/guide/en/ecs/current/index.html):
+
+**Fluent Bit → Elasticsearch**
 
 ```
 host.name                    ← kubernetes.host
@@ -215,8 +218,47 @@ orchestrator.namespace       ← kubernetes.namespace_name
 orchestrator.resource.name   ← kubernetes.pod_name
 orchestrator.resource.ip     ← kubernetes.pod_ip
 orchestrator.type            → "kubernetes"
-kubernetes.security.*        ← security.k8s.io/* annotations
 ```
+
+**Hitchhiker → Redis (Pod level)**
+
+| Redis Field | Description |
+|---|---|
+| `hitchhiker.k8s.pod.uid` | Pod UID |
+| `hitchhiker.k8s.pod.name` | Pod name |
+| `hitchhiker.k8s.pod.namespace` | Namespace |
+| `hitchhiker.k8s.pod.user.name` | Username that created the pod |
+| `hitchhiker.k8s.pod.group.name` | Groups of the creating user |
+| `hitchhiker.k8s.pod.serviceaccount` | ServiceAccount name |
+| `hitchhiker.k8s.pod.fieldmanager` | Field manager (e.g. kubectl, helm) |
+| `hitchhiker.k8s.pod.dnspolicy` | DNS policy |
+| `hitchhiker.k8s.pod.dnsconfig` | DNS config |
+| `hitchhiker.k8s.pod.owner.kind` | Owner kind (Deployment, ReplicaSet, etc.) |
+| `hitchhiker.k8s.pod.owner.name` | Owner name |
+| `hitchhiker.k8s.pod.host.pid` | hostPID enabled |
+| `hitchhiker.k8s.pod.host.network` | hostNetwork enabled |
+| `hitchhiker.k8s.pod.host.ipc` | hostIPC enabled |
+| `hitchhiker.k8s.pod.host.path.mounts` | hostPath mount paths |
+| `hitchhiker.k8s.pod.host.path.sensitive` | Sensitive paths (/etc, /proc, etc.) |
+| `hitchhiker.k8s.pod.host.path.exist` | hostPath volumes present |
+| `hitchhiker.k8s.pod.containers` | List of container metadata (see below) |
+
+**Hitchhiker → Redis (Container level, per container)**
+
+| Redis Field | Description |
+|---|---|
+| `container.name` | Container name |
+| `container.image` | Image |
+| `container.command` | Entrypoint command |
+| `container.args` | Arguments |
+| `container.env` | Environment variables |
+| `container.privileged` | Privileged mode |
+| `container.allowprivilegeescalation` | allowPrivilegeEscalation |
+| `container.runAsUsers` | runAsUser |
+| `container.runAsNonRoot` | runAsNonRoot |
+| `container.capabilities.added` | Added Linux capabilities |
+| `container.capabilities.dropped` | Dropped Linux capabilities |
+| `container.listeningPorts` | Declared container ports |
 
 ---
 
@@ -235,18 +277,22 @@ kubernetes.security.*        ← security.k8s.io/* annotations
 
 ```
 K8S-DETECTION-PIPELINE/
+├── hitchhiker/
+│   ├── main.py                      # Flask app, routes, background threads
+│   ├── enrich.py                    # Webhook payload parsing, UID resolution, Redis store
+│   ├── models.py                    # PodMetadata, ContainerMetadata, SENSITIVE_HOST_PATHS
+│   ├── store.py                     # Redis connection
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── k8s/
+│       └── manifests.yaml           # RBAC + Deployment + MutatingWebhookConfiguration
+│                                    # CLUSTER_NAME env var required for multi-cluster Redis key
 ├── falco/
 │   └── values.yaml                  # Helm values (json_output: true)
 ├── fluent-bit/
 │   ├── configmap.yaml               # Pipeline config (inputs/filters/outputs)
 │   ├── daemonset.yaml               # DaemonSet + env vars
 │   └── rbac.yaml                    # ServiceAccount + ClusterRole
-├── pod-security-annotator/
-│   ├── pod_security_annotator.py    # Python watch controller
-│   ├── requirements.txt
-│   ├── Dockerfile
-│   └── k8s/
-│       └── manifests.yaml           # RBAC + Deployment
 ├── lambda/
 │   └── cloudwatch_to_kafka/
 │       ├── main.py                  # CloudWatch → Kafka forwarder
@@ -266,22 +312,21 @@ K8S-DETECTION-PIPELINE/
 
 ## Detection Use Cases
 
-With security annotations enriched in every log event, the following queries become trivial in Kibana/Elastic SIEM:
+With Hitchhiker metadata available per Pod UID, the following queries become possible in Kibana/Elastic SIEM
+once Logstash Redis enrichment is in place:
 
 ```
 # Privileged pod executed a shell
-kubernetes.security.privileged: true AND rule.name: *shell*
+hitchhiker.k8s.pod.host.pid: true AND rule.name: *shell*
 
-# Process exec in a pod without NetworkPolicy
-kubernetes.security.network_policy_applied: false AND event.module: tetragon
+# Process exec in a pod with sensitive host mounts
+hitchhiker.k8s.pod.host.path.sensitive: true AND event.module: tetragon
 
-# Falco alert from a pod with sensitive host mounts
-kubernetes.security.host_path_sensitive: true AND event.module: falco
+# Falco alert from a pod running as root
+hitchhiker.k8s.pod.containers.container.runAsNonRoot: false AND event.module: falco
 
-# SA token auto-mounted + running as root
-kubernetes.security.automount_sa_token: true AND
-kubernetes.security.run_as_non_root: false AND
-event.module: falco
+# Capability escalation in a pod with added capabilities
+hitchhiker.k8s.pod.containers.container.capabilities.added: * AND event.module: falco
 
 # Secret enumeration via kubectl
 kubernetes.audit.objectRef.resource: secrets AND
@@ -298,10 +343,11 @@ kubernetes.audit.objectRef.resource: clusterrolebindings
 ```
 
 ---
+
 ## Sigma Detection Rules
 
 Platform-independent detection rules mapped to MITRE ATT&CK for Containers.
-See [`sigma-rules/`](./sigma-rules/) for Secret Enumeration, Pod Exec, 
+See [`sigma-rules/`](./sigma-rules/) for Secret Enumeration, Pod Exec,
 ClusterRoleBinding creation rules.
 
 ---
