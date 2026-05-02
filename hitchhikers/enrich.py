@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import os
 from models import PodMetadata, ContainerMetadata, to_dict, SENSITIVE_HOST_PATHS
 from store import r
 from kubernetes import client, config
@@ -8,7 +9,6 @@ from kubernetes import client, config
 logger = logging.getLogger(__name__)
 
 def enrich(response: dict):
-    logger.info(f"[DEBUG] full payload: {json.dumps(response, indent=2, default=str)}")
     try:
         req = response['request']
         obj = req['object']
@@ -84,8 +84,9 @@ def enrich(response: dict):
             )
             metadata.containers.append(container)
 
+        clusterName = os.environ.get('CLUSTER_NAME', 'default')
         r.set(f'hitchhiker-k8s-{uid}', json.dumps(to_dict(metadata)))
-        r.set(f'hitchhiker-k8s-{cluster_name}/{namespace}/{name}', json.dumps(to_dict(metadata)))
+        r.set(f'hitchhiker-k8s-{clusterName}/{namespace}/{name}', json.dumps(to_dict(metadata)))
         logger.info(f"enriched {namespace}/{name} uid={uid} owner={ownerKind}/{ownerName}")
 
     except Exception as e:
