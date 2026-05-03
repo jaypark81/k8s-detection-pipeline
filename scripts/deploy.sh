@@ -93,7 +93,7 @@ install_hitchhiker "${ENV}" "${CLUSTER_NAME}"
 install_fluent_bit "${ENV}" "${CLUSTER_NAME}"
 
 # 7. Logstash
-install_logstash
+install_logstash "${CLUSTER_NAME}"
 
 # 8. Lambda (eks only)
 if [[ "${ENV}" == "eks" ]]; then
