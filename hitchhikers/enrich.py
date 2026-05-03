@@ -28,7 +28,7 @@ def enrich(response: dict):
                 logger.error("[SKIP] cannot resolve uid")
                 return
         namespace = req.get('namespace', '')
-        username = req['userInfo']['username']
+        username = req['request']['userInfo']['username']
         groups = ','.join(req['userInfo'].get('groups', []))
         fieldManager = req.get('options', {}).get('fieldManager', '')
 
