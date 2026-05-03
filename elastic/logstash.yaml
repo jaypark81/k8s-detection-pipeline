@@ -28,7 +28,7 @@ spec:
             - name: REDIS_PORT
               value: "6379"
             - name: CLUSTER_NAME
-              value: "default"
+              value: "CLUSTER_NAME"
             - name: ES_USER
               value: "elastic"
             - name: ES_PASSWORD

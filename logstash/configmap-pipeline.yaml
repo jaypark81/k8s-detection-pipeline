@@ -521,7 +521,7 @@ data:
                   timeout: 1
                 )
 
-                cluster  = event.get("[cluster_name]") || "default"
+                cluster  = event.get("[cluster_name]") || ENV["CLUSTER_NAME"] || "default"
                 ns       = event.get("[kubernetes][audit][objectRef][namespace]")
                 pod_name = event.get("[kubernetes][audit][objectRef][name]")
 
