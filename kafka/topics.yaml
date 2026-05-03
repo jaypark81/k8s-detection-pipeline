@@ -1,0 +1,54 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: siem-falco
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: siem
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: siem-tetragon
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: siem
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: siem-k8s
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: siem
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: siem-kyverno
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: siem
+spec:
+  partitions: 1
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: siem-k8s-audit
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: siem
+spec:
+  partitions: 1
+  replicas: 1

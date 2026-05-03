@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config-output
+  namespace: kube-system
+data:
+  outputs.conf: |
+    [OUTPUT]
+        Name                          kafka
+        Match                         falco.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        siem-falco
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         tetragon.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        siem-tetragon
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         kyverno.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        siem-kyverno
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER
+
+    [OUTPUT]
+        Name                          kafka
+        Match                         k8s.*
+        Brokers                       ${KAFKA_BROKERS}
+        Topics                        siem-k8s
+        Timestamp_Key                 @timestamp
+        Timestamp_Format              iso8601
+        Retry_Limit                   3
+        rdkafka.security.protocol     SASL_SSL
+        rdkafka.sasl.mechanisms       AWS_MSK_IAM
+        rdkafka.sasl.oauthbearer.config  principal=USER

@@ -29,7 +29,7 @@ roleRef:
 apiVersion: v1
 kind: Service
 metadata:
-  name: hitchhiker-webhook-svc
+  name: hitchhiker-webhook
   namespace: hitchhiker
 spec:
   selector:
@@ -54,16 +54,15 @@ spec:
         app: hitchhiker-webhook
     spec:
       serviceAccountName: hitchhiker-sa
-      nodeName: kuber-1
       containers:
         - name: webhook
-          image: hitchhiker-webhook:latest
-          imagePullPolicy: Never
+          image: hitchhiker-webhook:00000
+          imagePullPolicy: Always
           ports:
             - containerPort: 8443
           env:
             - name: CLUSTER_NAME
-              value: "your-cluster-name"
+              value: "cluster-name"
           resources:
             requests:
               cpu: "100m"
@@ -93,7 +92,7 @@ webhooks:
     failurePolicy: Ignore
     clientConfig:
       service:
-        name: hitchhiker-webhook-svc
+        name: hitchhiker-webhook
         namespace: hitchhiker
         path: "/mutate"
     rules:
@@ -102,3 +101,65 @@ webhooks:
         operations: ["CREATE", "UPDATE"]
         resources: ["pods"]
         scope: "*"
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hitchhiker-issuer
+  namespace: hitchhiker
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hitchhiker-tls
+  namespace: hitchhiker
+spec:
+  secretName: hitchhiker-tls-secret
+  dnsNames:
+    - hitchhiker-webhook.hitchhiker.svc
+    - hitchhiker-webhook.hitchhiker.svc.cluster.local
+  issuerRef:
+    name: hitchhiker-issuer
+    kind: Issuer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: hitchhiker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 100m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: hitchhiker
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

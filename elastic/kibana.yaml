@@ -1,0 +1,19 @@
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: siem
+  namespace: elastic-system
+spec:
+  version: 9.3.4
+  count: 1
+  elasticsearchRef:
+    name: siem
+  http:
+    service:
+      spec:
+        type: NodePort
+        ports:
+        - name: https
+          nodePort: 30561
+          port: 5601
+          targetPort: 5601
