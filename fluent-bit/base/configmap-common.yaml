@@ -1,16 +1,8 @@
-# fluent-bit/configmap.yaml
-# Fluent Bit configuration for K8S-DETECTION-PIPELINE
-# Collects Falco alerts, Tetragon events, and K8s workload logs
-# Enriches all logs with Kubernetes metadata before sending to MSK
-
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: fluent-bit-config
+  name: fluent-bit-config-common
   namespace: kube-system
-  labels:
-    app.kubernetes.io/name: fluent-bit
-    app.kubernetes.io/part-of: k8s-detection-pipeline
 data:
   fluent-bit.conf: |
     [SERVICE]
@@ -22,8 +14,11 @@ data:
         HTTP_Listen   0.0.0.0
         HTTP_Port     2020
 
-    # ── Inputs ────────────────────────────────────────────────────────────────
+    @INCLUDE inputs.conf
+    @INCLUDE filters.conf
+    @INCLUDE /fluent-bit/etc/outputs/outputs.conf
 
+  inputs.conf: |
     # Falco alerts (JSON from stdout)
     [INPUT]
         Name              tail
@@ -46,22 +41,42 @@ data:
         Skip_Long_Lines   On
         Refresh_Interval  5
 
-    # K8s workload logs (all other namespaces)
-    # Excludes kube-system, falco, elk, monitoring namespaces
+    # Kyverno policy events
+    [INPUT]
+        Name              tail
+        Tag               kyverno.*
+        Path              /var/log/containers/kyverno-*.log
+        Parser            cri
+        DB                /var/log/flb_kyverno.db
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+    # K8s workload logs (excluding system namespaces)
     [INPUT]
         Name              tail
         Tag               k8s.*
         Path              /var/log/containers/*.log
-        Exclude_Path      /var/log/containers/falco-*.log,/var/log/containers/tetragon-*.log,/var/log/containers/*_kube-system_*.log,/var/log/containers/*_elk_*.log,/var/log/containers/*_monitoring_*.log
+        Exclude_Path      /var/log/containers/falco-*.log,/var/log/containers/tetragon-*.log,/var/log/containers/kyverno-*.log
         Parser            cri
         DB                /var/log/flb_k8s.db
         Mem_Buf_Limit     20MB
         Skip_Long_Lines   On
         Refresh_Interval  5
 
-    # ── Kubernetes Metadata Enrichment ────────────────────────────────────────
-    # Attaches pod labels, namespace, app name, owner info
+    # K8s API server audit logs (control plane only)
+    [INPUT]
+        Name              tail
+        Tag               k8s-audit.*
+        Path              /var/log/kubernetes/audit*.log
+        Parser            json
+        DB                /var/log/flb_k8s_audit.db
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
 
+  filters.conf: |
+    # Enrich Falco logs with Kubernetes metadata
     [FILTER]
         Name                kubernetes
         Match               falco.*
@@ -72,11 +87,10 @@ data:
         Merge_Log           On
         Merge_Log_Key       log_parsed
         Keep_Log            Off
-        K8S-Logging.Parser  On
-        K8S-Logging.Exclude Off
         Labels              On
         Annotations         Off
 
+    # Enrich Tetragon logs with Kubernetes metadata
     [FILTER]
         Name                kubernetes
         Match               tetragon.*
@@ -90,6 +104,21 @@ data:
         Labels              On
         Annotations         Off
 
+    # Enrich Kyverno logs with Kubernetes metadata
+    [FILTER]
+        Name                kubernetes
+        Match               kyverno.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kyverno.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_parsed
+        Keep_Log            Off
+        Labels              On
+        Annotations         Off
+
+    # Enrich K8s workload logs with Kubernetes metadata
     [FILTER]
         Name                kubernetes
         Match               k8s.*
@@ -118,50 +147,24 @@ data:
 
     [FILTER]
         Name    record_modifier
+        Match   kyverno.*
+        Record  cluster_name ${CLUSTER_NAME}
+        Record  source_type  kyverno
+
+    [FILTER]
+        Name    record_modifier
         Match   k8s.*
         Record  cluster_name ${CLUSTER_NAME}
         Record  source_type  k8s
 
-    # ── Outputs → MSK (Kafka) ──────────────────────────────────────────────────
-
-    [OUTPUT]
-        Name                          kafka
-        Match                         falco.*
-        Brokers                       ${KAFKA_BROKERS}
-        Topics                        ${KAFKA_TOPIC_FALCO}
-        Timestamp_Key                 @timestamp
-        Timestamp_Format              iso8601
-        Retry_Limit                   3
-        rdkafka.security.protocol     SASL_SSL
-        rdkafka.sasl.mechanisms       AWS_MSK_IAM
-        rdkafka.sasl.oauthbearer.config  principal=USER
-
-    [OUTPUT]
-        Name                          kafka
-        Match                         tetragon.*
-        Brokers                       ${KAFKA_BROKERS}
-        Topics                        ${KAFKA_TOPIC_TETRAGON}
-        Timestamp_Key                 @timestamp
-        Timestamp_Format              iso8601
-        Retry_Limit                   3
-        rdkafka.security.protocol     SASL_SSL
-        rdkafka.sasl.mechanisms       AWS_MSK_IAM
-        rdkafka.sasl.oauthbearer.config  principal=USER
-
-    [OUTPUT]
-        Name                          kafka
-        Match                         k8s.*
-        Brokers                       ${KAFKA_BROKERS}
-        Topics                        ${KAFKA_TOPIC_K8S}
-        Timestamp_Key                 @timestamp
-        Timestamp_Format              iso8601
-        Retry_Limit                   3
-        rdkafka.security.protocol     SASL_SSL
-        rdkafka.sasl.mechanisms       AWS_MSK_IAM
-        rdkafka.sasl.oauthbearer.config  principal=USER
+    [FILTER]
+        Name    record_modifier
+        Match   k8s-audit.*
+        Record  cluster_name ${CLUSTER_NAME}
+        Record  source_type  k8s-audit
 
   parsers.conf: |
-    # CRI log format parser (used by containerd/EKS)
+    # CRI log format parser (containerd)
     [PARSER]
         Name        cri
         Format      regex

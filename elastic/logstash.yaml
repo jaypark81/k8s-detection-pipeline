@@ -1,0 +1,45 @@
+apiVersion: logstash.k8s.elastic.co/v1alpha1
+kind: Logstash
+metadata:
+  name: siem
+  namespace: elastic-system
+spec:
+  version: 9.3.4
+  count: 1
+  elasticsearchRefs:
+    - name: siem
+      clusterName: siem
+  podTemplate:
+    spec:
+      containers:
+        - name: logstash
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 500m
+            limits:
+              memory: 2Gi
+              cpu: 2
+          env:
+            - name: LS_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+            - name: REDIS_HOST
+              value: "redis.hitchhiker.svc"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: CLUSTER_NAME
+              value: "default"
+            - name: ES_USER
+              value: "elastic"
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: siem-es-elastic-user
+                  key: elastic
+          volumeMounts:
+            - name: pipeline
+              mountPath: /usr/share/logstash/pipeline
+      volumes:
+        - name: pipeline
+          configMap:
+            name: logstash-pipeline

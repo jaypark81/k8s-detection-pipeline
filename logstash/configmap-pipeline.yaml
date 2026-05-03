@@ -1,0 +1,717 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-pipeline
+  namespace: elastic-system
+data:
+  0000_input.conf: |
+    input {
+      kafka {
+        bootstrap_servers => "siem-kafka-bootstrap.kafka.svc:9092"
+        topics => [
+          "siem-falco",
+          "siem-tetragon",
+          "siem-k8s",
+          "siem-k8s-audit",
+          "siem-kyverno"
+        ]
+        codec => "json"
+        group_id => "logstash"
+        poll_timeout_ms => 100
+        auto_offset_reset => "latest"
+      }
+    }
+
+  0200_filter_falco.conf: |
+    filter {
+      if [source_type] == "falco" {
+
+        mutate {
+          add_field => { "[@metadata][target_index]" => "siem-falco" }
+        }
+
+        # ECS Event fields
+        mutate {
+          add_field => {
+            "[event][kind]"     => "alert"
+            "[event][module]"   => "falco"
+            "[event][dataset]"  => "falco.alert"
+            "[event][category]" => "intrusion_detection"
+            "[event][type]"     => "info"
+          }
+        }
+
+        if [log_parsed][priority] == "EMERGENCY" or [log_parsed][priority] == "ALERT" or [log_parsed][priority] == "CRITICAL" {
+          mutate { add_field => { "[event][severity]" => 1 } }
+        } else if [log_parsed][priority] == "ERROR" {
+          mutate { add_field => { "[event][severity]" => 2 } }
+        } else if [log_parsed][priority] == "WARNING" {
+          mutate { add_field => { "[event][severity]" => 3 } }
+        } else {
+          mutate { add_field => { "[event][severity]" => 4 } }
+        }
+
+        # ECS Host fields
+        mutate {
+          rename => { "[kubernetes][host]" => "[host][name]" }
+        }
+
+        # ECS Container fields
+        mutate {
+          rename => {
+            "[kubernetes][container_name]"  => "[container][name]"
+            "[kubernetes][container_image]" => "[container][image][name]"
+            "[kubernetes][docker_id]"       => "[container][id]"
+          }
+        }
+
+        # ECS Orchestrator fields
+        mutate {
+          rename => {
+            "[cluster_name]"               => "[orchestrator][cluster][name]"
+            "[kubernetes][namespace_name]" => "[orchestrator][namespace]"
+            "[kubernetes][pod_name]"       => "[orchestrator][resource][name]"
+            "[kubernetes][pod_ip]"         => "[orchestrator][resource][ip]"
+          }
+          add_field => { "[orchestrator][type]" => "kubernetes" }
+        }
+
+        # ECS Log fields
+        mutate {
+          rename => { "[stream]" => "[log][iostream]" }
+        }
+
+        # Falco specific fields
+        mutate {
+          rename => {
+            "[log_parsed][rule]"     => "[rule][name]"
+            "[log_parsed][priority]" => "[rule][category]"
+            "[log_parsed][output]"   => "[message]"
+          }
+        }
+
+        if [log_parsed][output_fields] {
+          mutate {
+            rename => {
+              "[log_parsed][output_fields][proc.name]"    => "[process][name]"
+              "[log_parsed][output_fields][proc.pid]"     => "[process][pid]"
+              "[log_parsed][output_fields][proc.cmdline]" => "[process][command_line]"
+              "[log_parsed][output_fields][fd.name]"      => "[file][path]"
+              "[log_parsed][output_fields][user.name]"    => "[user][name]"
+            }
+          }
+        }
+
+        # Hitchhiker Redis lookup
+        # Falco has no pod uid - use cluster/namespace/pod_name only
+        if [log_parsed][output_fields][k8s.pod.name] and [log_parsed][output_fields][k8s.ns.name] {
+          ruby {
+            code => '
+              require "redis"
+              require "json"
+
+              begin
+                $redis ||= Redis.new(
+                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
+                  port: (ENV["REDIS_PORT"] || 6379).to_i,
+                  timeout: 1
+                )
+
+                cluster  = event.get("[orchestrator][cluster][name]") || "default"
+                ns       = event.get("[log_parsed][output_fields][k8s.ns.name]") ||
+                           event.get("[orchestrator][namespace]")
+                pod_name = event.get("[log_parsed][output_fields][k8s.pod.name]") ||
+                           event.get("[orchestrator][resource][name]")
+
+                if cluster && ns && pod_name
+                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
+                  if val
+                    meta = JSON.parse(val)
+                    meta.each { |k, v| event.set("[#{k}]", v) }
+                  end
+                end
+              rescue => e
+                event.tag("hitchhiker_error")
+                event.set("[hitchhiker][error]", e.message)
+              end
+            '
+          }
+        }
+
+        # Cleanup
+        mutate {
+          remove_field => ["log", "logtag", "source_type", "[log_parsed]"]
+        }
+      }
+    }
+
+  0201_filter_tetragon.conf: |
+    filter {
+      if [source_type] == "tetragon" {
+
+        mutate {
+          add_field => { "[@metadata][target_index]" => "siem-tetragon" }
+        }
+
+        # ECS Event fields
+        mutate {
+          add_field => {
+            "[event][kind]"    => "event"
+            "[event][module]"  => "tetragon"
+            "[event][dataset]" => "tetragon.process"
+          }
+        }
+
+        if [log_parsed][process_exec] {
+          mutate {
+            add_field => {
+              "[event][category]" => "process"
+              "[event][type]"     => "start"
+              "[event][action]"   => "process_exec"
+            }
+          }
+        } else if [log_parsed][process_exit] {
+          mutate {
+            add_field => {
+              "[event][category]" => "process"
+              "[event][type]"     => "end"
+              "[event][action]"   => "process_exit"
+            }
+          }
+        } else if [log_parsed][process_kprobe] {
+          mutate {
+            add_field => {
+              "[event][category]" => "process"
+              "[event][type]"     => "info"
+              "[event][action]"   => "process_kprobe"
+            }
+          }
+        } else if [log_parsed][process_tracepoint] {
+          mutate {
+            add_field => {
+              "[event][category]" => "process"
+              "[event][type]"     => "info"
+              "[event][action]"   => "process_tracepoint"
+            }
+          }
+        }
+
+        # ECS Host fields
+        mutate {
+          rename => { "[kubernetes][host]" => "[host][name]" }
+        }
+
+        # ECS Container fields
+        mutate {
+          rename => {
+            "[kubernetes][container_name]"  => "[container][name]"
+            "[kubernetes][container_image]" => "[container][image][name]"
+            "[kubernetes][docker_id]"       => "[container][id]"
+          }
+        }
+
+        # ECS Orchestrator fields
+        mutate {
+          rename => {
+            "[cluster_name]"               => "[orchestrator][cluster][name]"
+            "[kubernetes][namespace_name]" => "[orchestrator][namespace]"
+            "[kubernetes][pod_name]"       => "[orchestrator][resource][name]"
+            "[kubernetes][pod_ip]"         => "[orchestrator][resource][ip]"
+          }
+          add_field => { "[orchestrator][type]" => "kubernetes" }
+        }
+
+        # ECS Process fields
+        if [log_parsed][process_exec][process] {
+          mutate {
+            rename => {
+              "[log_parsed][process_exec][process][binary]"         => "[process][executable]"
+              "[log_parsed][process_exec][process][arguments]"      => "[process][args]"
+              "[log_parsed][process_exec][process][pid]"            => "[process][pid]"
+              "[log_parsed][process_exec][process][start_time]"     => "[process][start]"
+              "[log_parsed][process_exec][process][uid]"            => "[process][user][id]"
+              "[log_parsed][process_exec][process][cwd]"            => "[process][working_directory]"
+              "[log_parsed][process_exec][process][parent_exec_id]" => "[process][parent][entity_id]"
+            }
+          }
+        }
+
+        # ECS Log fields
+        mutate {
+          rename => { "[stream]" => "[log][iostream]" }
+        }
+
+        # Hitchhiker Redis lookup
+        # Tetragon has pod uid - primary uid, fallback cluster/ns/name
+        if [log_parsed][process_exec][process][pod] or
+           [log_parsed][process_exit][process][pod] or
+           [log_parsed][process_kprobe][process][pod] or
+           [log_parsed][process_tracepoint][process][pod] {
+          ruby {
+            code => '
+              require "redis"
+              require "json"
+
+              begin
+                $redis ||= Redis.new(
+                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
+                  port: (ENV["REDIS_PORT"] || 6379).to_i,
+                  timeout: 1
+                )
+
+                cluster = event.get("[orchestrator][cluster][name]") || "default"
+
+                event_type = ["process_exec", "process_exit", "process_kprobe", "process_tracepoint"].find do |t|
+                  event.get("[log_parsed][#{t}][process][pod]")
+                end
+
+                pod_uid  = event.get("[log_parsed][#{event_type}][process][pod][uid]")
+                ns       = event.get("[log_parsed][#{event_type}][process][pod][namespace]")
+                pod_name = event.get("[log_parsed][#{event_type}][process][pod][name]")
+
+                val = nil
+
+                # Primary: uid
+                if pod_uid && !pod_uid.empty?
+                  val = $redis.get("hitchhiker-k8s-#{pod_uid}")
+                end
+
+                # Fallback: cluster/namespace/pod_name
+                if val.nil? && cluster && ns && pod_name
+                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
+                end
+
+                if val
+                  meta = JSON.parse(val)
+                  meta.each { |k, v| event.set("[#{k}]", v) }
+                end
+              rescue => e
+                event.tag("hitchhiker_error")
+                event.set("[hitchhiker][error]", e.message)
+              end
+            '
+          }
+        }
+
+        # Cleanup
+        mutate {
+          remove_field => ["log", "logtag", "source_type", "[log_parsed]"]
+        }
+      }
+    }
+
+  0202_filter_k8s.conf: |
+    filter {
+      if [source_type] == "k8s" {
+
+        mutate {
+          add_field => { "[@metadata][target_index]" => "siem-k8s" }
+        }
+
+        # ECS Event fields
+        mutate {
+          add_field => {
+            "[event][kind]"     => "event"
+            "[event][module]"   => "kubernetes"
+            "[event][dataset]"  => "kubernetes.container"
+            "[event][category]" => "host"
+            "[event][type]"     => "info"
+          }
+        }
+
+        # ECS Host fields
+        mutate {
+          rename => { "[kubernetes][host]" => "[host][name]" }
+        }
+
+        # ECS Container fields
+        mutate {
+          rename => {
+            "[kubernetes][container_name]"  => "[container][name]"
+            "[kubernetes][container_image]" => "[container][image][name]"
+            "[kubernetes][docker_id]"       => "[container][id]"
+          }
+        }
+
+        # ECS Orchestrator fields
+        mutate {
+          rename => {
+            "[cluster_name]"               => "[orchestrator][cluster][name]"
+            "[kubernetes][namespace_name]" => "[orchestrator][namespace]"
+            "[kubernetes][pod_name]"       => "[orchestrator][resource][name]"
+            "[kubernetes][pod_ip]"         => "[orchestrator][resource][ip]"
+          }
+          add_field => { "[orchestrator][type]" => "kubernetes" }
+        }
+
+        # ECS Log fields
+        mutate {
+          rename => {
+            "[stream]" => "[log][iostream]"
+            "[log]"    => "[message]"
+          }
+        }
+
+        # Hitchhiker Redis lookup - only when pod_id exists
+        if [kubernetes][pod_id] {
+          ruby {
+            code => '
+              require "redis"
+              require "json"
+
+              begin
+                $redis ||= Redis.new(
+                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
+                  port: (ENV["REDIS_PORT"] || 6379).to_i,
+                  timeout: 1
+                )
+
+                cluster  = event.get("[orchestrator][cluster][name]") || "default"
+                ns       = event.get("[orchestrator][namespace]")
+                pod_name = event.get("[orchestrator][resource][name]")
+                pod_id   = event.get("[kubernetes][pod_id]")
+
+                val = nil
+
+                # Primary: uid
+                if pod_id && !pod_id.empty?
+                  val = $redis.get("hitchhiker-k8s-#{pod_id}")
+                end
+
+                # Fallback: cluster/namespace/pod_name
+                if val.nil? && cluster && ns && pod_name
+                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
+                end
+
+                if val
+                  meta = JSON.parse(val)
+                  meta.each { |k, v| event.set("[#{k}]", v) }
+                end
+              rescue => e
+                event.tag("hitchhiker_error")
+                event.set("[hitchhiker][error]", e.message)
+              end
+            '
+          }
+        }
+
+        # Cleanup
+        mutate {
+          remove_field => ["logtag", "source_type", "[log_parsed]"]
+        }
+      }
+    }
+
+  0203_filter_k8s_audit.conf: |
+    filter {
+      if [source_type] == "k8s-audit" {
+
+        mutate {
+          add_field => { "[@metadata][target_index]" => "siem-k8s-audit" }
+        }
+
+        # ECS Event fields
+        mutate {
+          add_field => {
+            "[event][kind]"    => "event"
+            "[event][module]"  => "kubernetes"
+            "[event][dataset]" => "kubernetes.audit"
+          }
+        }
+
+        mutate {
+          rename => { "verb" => "[event][action]" }
+        }
+
+        if [responseStatus][code] {
+          if [responseStatus][code] >= 200 and [responseStatus][code] < 300 {
+            mutate { add_field => { "[event][outcome]" => "success" } }
+          } else if [responseStatus][code] >= 400 {
+            mutate { add_field => { "[event][outcome]" => "failure" } }
+          } else {
+            mutate { add_field => { "[event][outcome]" => "unknown" } }
+          }
+        }
+
+        # ECS User fields
+        mutate {
+          rename => {
+            "[user][username]" => "[user][name]"
+            "[user][uid]"      => "[user][id]"
+            "[user][groups]"   => "[user][roles]"
+          }
+        }
+
+        # ECS Source fields
+        mutate {
+          rename => { "sourceIPs" => "[source][ip]" }
+        }
+
+        # ECS URL fields
+        mutate {
+          rename => { "requestURI" => "[url][path]" }
+        }
+
+        # kubernetes.audit fields
+        mutate {
+          rename => {
+            "[objectRef][resource]"    => "[kubernetes][audit][objectRef][resource]"
+            "[objectRef][subresource]" => "[kubernetes][audit][objectRef][subresource]"
+            "[objectRef][namespace]"   => "[kubernetes][audit][objectRef][namespace]"
+            "[objectRef][name]"        => "[kubernetes][audit][objectRef][name]"
+            "[objectRef][apiVersion]"  => "[kubernetes][audit][objectRef][apiVersion]"
+            "[responseStatus][code]"   => "[kubernetes][audit][responseStatus][code]"
+            "stage"                    => "[kubernetes][audit][stage]"
+            "level"                    => "[kubernetes][audit][level]"
+            "auditID"                  => "[kubernetes][audit][auditID]"
+          }
+        }
+
+        # Authorization annotations
+        if [annotations] {
+          mutate {
+            rename => {
+              "[annotations][authorization.k8s.io/decision]" => "[kubernetes][audit][authorization][decision]"
+              "[annotations][authorization.k8s.io/reason]"   => "[kubernetes][audit][authorization][reason]"
+            }
+          }
+        }
+
+        # Parse requestReceivedTimestamp as @timestamp
+        if [requestReceivedTimestamp] {
+          date {
+            match    => ["requestReceivedTimestamp", "ISO8601"]
+            target   => "@timestamp"
+            timezone => "UTC"
+          }
+        }
+
+        # Extract exec commands from kubectl exec audit events
+        if [kubernetes][audit][objectRef][subresource] == "exec" {
+          ruby {
+            code => '
+              require "uri"
+              path = event.get("[url][path]") || ""
+              query = path.split("?", 2)[1] || ""
+              commands = URI.decode_www_form(query)
+                          .select { |k, _| k == "command" }
+                          .map    { |_, v| v }
+              unless commands.empty?
+                event.set("[process][args]", commands)
+                event.set("[process][command_line]", commands.join(" "))
+              end
+            '
+          }
+        }
+
+        # Hitchhiker Redis lookup
+        # audit log: only meaningful for pods resource with namespace and name
+        if [kubernetes][audit][objectRef][namespace] and
+           [kubernetes][audit][objectRef][name] and
+           [kubernetes][audit][objectRef][resource] == "pods" {
+          ruby {
+            code => '
+              require "redis"
+              require "json"
+
+              begin
+                $redis ||= Redis.new(
+                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
+                  port: (ENV["REDIS_PORT"] || 6379).to_i,
+                  timeout: 1
+                )
+
+                cluster  = event.get("[cluster_name]") || "default"
+                ns       = event.get("[kubernetes][audit][objectRef][namespace]")
+                pod_name = event.get("[kubernetes][audit][objectRef][name]")
+
+                val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
+
+                if val
+                  meta = JSON.parse(val)
+                  meta.each { |k, v| event.set("[#{k}]", v) }
+                end
+              rescue => e
+                event.tag("hitchhiker_error")
+                event.set("[hitchhiker][error]", e.message)
+              end
+            '
+          }
+        }
+
+        # Cleanup
+        mutate {
+          remove_field => [
+            "source_type",
+            "cluster_name",
+            "requestReceivedTimestamp",
+            "stageTimestamp",
+            "annotations",
+            "objectRef",
+            "responseStatus",
+            "kind",
+            "apiVersion",
+            "userAgent"
+          ]
+        }
+      }
+    }
+
+  0204_filter_kyverno.conf: |
+    filter {
+      if [source_type] == "kyverno" {
+
+        mutate {
+          add_field => { "[@metadata][target_index]" => "siem-kyverno" }
+        }
+
+        # ECS Event fields
+        mutate {
+          add_field => {
+            "[event][kind]"     => "event"
+            "[event][module]"   => "kyverno"
+            "[event][dataset]"  => "kyverno.policy"
+            "[event][category]" => "configuration"
+            "[event][type]"     => "info"
+          }
+        }
+
+        # ECS Host fields
+        mutate {
+          rename => { "[kubernetes][host]" => "[host][name]" }
+        }
+
+        # ECS Container fields
+        mutate {
+          rename => {
+            "[kubernetes][container_name]"  => "[container][name]"
+            "[kubernetes][container_image]" => "[container][image][name]"
+            "[kubernetes][docker_id]"       => "[container][id]"
+          }
+        }
+
+        # ECS Orchestrator fields
+        mutate {
+          rename => {
+            "[cluster_name]"               => "[orchestrator][cluster][name]"
+            "[kubernetes][namespace_name]" => "[orchestrator][namespace]"
+            "[kubernetes][pod_name]"       => "[orchestrator][resource][name]"
+            "[kubernetes][pod_ip]"         => "[orchestrator][resource][ip]"
+          }
+          add_field => { "[orchestrator][type]" => "kubernetes" }
+        }
+
+        # ECS Log fields
+        mutate {
+          rename => {
+            "[stream]" => "[log][iostream]"
+            "[log]"    => "[message]"
+          }
+        }
+
+        # Hitchhiker Redis lookup - only when pod_id exists
+        if [kubernetes][pod_id] {
+          ruby {
+            code => '
+              require "redis"
+              require "json"
+
+              begin
+                $redis ||= Redis.new(
+                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
+                  port: (ENV["REDIS_PORT"] || 6379).to_i,
+                  timeout: 1
+                )
+
+                cluster  = event.get("[orchestrator][cluster][name]") || "default"
+                ns       = event.get("[orchestrator][namespace]")
+                pod_name = event.get("[orchestrator][resource][name]")
+                pod_id   = event.get("[kubernetes][pod_id]")
+
+                val = nil
+
+                # Primary: uid
+                if pod_id && !pod_id.empty?
+                  val = $redis.get("hitchhiker-k8s-#{pod_id}")
+                end
+
+                # Fallback: cluster/namespace/pod_name
+                if val.nil? && cluster && ns && pod_name
+                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
+                end
+
+                if val
+                  meta = JSON.parse(val)
+                  meta.each { |k, v| event.set("[#{k}]", v) }
+                end
+              rescue => e
+                event.tag("hitchhiker_error")
+                event.set("[hitchhiker][error]", e.message)
+              end
+            '
+          }
+        }
+
+        # Cleanup
+        mutate {
+          remove_field => ["logtag", "source_type", "[log_parsed]"]
+        }
+      }
+    }
+
+  9999_output.conf: |
+    output {
+      if [event][module] == "falco" {
+        elasticsearch {
+          hosts => ["https://siem-es-http.elastic-system.svc:9200"]
+          ssl_enabled => true
+          ssl_verification_mode => "none"
+          user => "${ES_USER}"
+          password => "${ES_PASSWORD}"
+          data_stream => true
+          data_stream_type => "logs"
+          data_stream_dataset => "falco"
+          data_stream_namespace => "siem"
+          action => "create"
+        }
+      } else if [event][module] == "tetragon" {
+        elasticsearch {
+          hosts => ["https://siem-es-http.elastic-system.svc:9200"]
+          ssl_enabled => true
+          ssl_verification_mode => "none"
+          user => "${ES_USER}"
+          password => "${ES_PASSWORD}"
+          data_stream => true
+          data_stream_type => "logs"
+          data_stream_dataset => "tetragon"
+          data_stream_namespace => "siem"
+          action => "create"
+        }
+      } else if [event][module] == "kyverno" {
+        elasticsearch {
+          hosts => ["https://siem-es-http.elastic-system.svc:9200"]
+          ssl_enabled => true
+          ssl_verification_mode => "none"
+          user => "${ES_USER}"
+          password => "${ES_PASSWORD}"
+          data_stream => true
+          data_stream_type => "logs"
+          data_stream_dataset => "kyverno"
+          data_stream_namespace => "siem"
+          action => "create"
+        }
+      } else {
+        elasticsearch {
+          hosts => ["https://siem-es-http.elastic-system.svc:9200"]
+          ssl_enabled => true
+          ssl_verification_mode => "none"
+          user => "${ES_USER}"
+          password => "${ES_PASSWORD}"
+          data_stream => true
+          data_stream_type => "logs"
+          data_stream_dataset => "kubernetes"
+          data_stream_namespace => "siem"
+          action => "create"
+        }
+      }
+    }
