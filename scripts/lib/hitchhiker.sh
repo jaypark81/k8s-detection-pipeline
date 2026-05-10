@@ -30,7 +30,7 @@ install_hitchhiker() {
 
 uninstall_hitchhiker() {
   log_info "Removing Hitchhiker..."
-  kubectl delete -f hitchhikers/k8s/ --ignore-not-found
+  kubectl delete -f hitchhikers/k8s/manifests.yaml --ignore-not-found
   kubectl delete namespace hitchhiker --ignore-not-found
   log_success "Hitchhiker removed"
 }
