@@ -14,6 +14,7 @@ install_eck() {
   log_info "Deploying Elasticsearch..."
   kubectl apply -f elastic/elasticsearch.yaml
   wait_for_es 600
+  apply_ilm
 
   log_info "Deploying Kibana..."
   kubectl apply -f elastic/kibana.yaml
@@ -59,4 +60,52 @@ wait_for_es() {
   done
   log_error "Elasticsearch did not become ready within ${timeout}s"
   exit 1
+}
+
+apply_ilm() {
+  local es_password
+  es_password=$(kubectl -n elastic-system get secret siem-es-elastic-user \
+    -o go-template='{{.data.elastic | base64decode}}')
+
+  local es_url
+  es_url=$(kubectl get service siem-es-http -n elastic-system \
+    -o jsonpath='{.spec.clusterIP}')
+
+  log_info "Applying ILM policy..."
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/_ilm/policy/siem-cleanup" \
+    -H "Content-Type: application/json" \
+    -d '{
+            "policy": {
+                "phases": {
+                    "hot": {
+                        "actions": {
+                            "rollover": {
+                                "max_primary_shard_size": "500mb",
+                                "max_age": "1d"
+                            }
+                        }
+                    },
+                    "delete": {
+                        "min_age": "1d",
+                        "actions": { "delete": {} }
+                    }
+                }
+            }
+    }'
+
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/_index_template/siem-template" \
+    -H "Content-Type: application/json" \
+    -d '{
+            "priority": 200,
+            "index_patterns": ["logs-*"],
+            "data_stream": {},
+            "template": {
+                "settings": {
+                    "index.lifecycle.name": "siem-cleanup"
+                }
+            }
+        }'
+  log_success "ILM policy applied"
 }

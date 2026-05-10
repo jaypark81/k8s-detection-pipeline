@@ -127,7 +127,10 @@ data:
                   val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
                   if val
                     meta = JSON.parse(val)
-                    meta.each { |k, v| event.set("[#{k}]", v) }
+                    meta.each do |k, v|
+                      path = k.split(".").map { |p| "[#{p}]" }.join
+                      event.set(path, v)
+                    end
                   end
                 end
               rescue => e
@@ -283,7 +286,10 @@ data:
 
                 if val
                   meta = JSON.parse(val)
-                  meta.each { |k, v| event.set("[#{k}]", v) }
+                  meta.each do |k, v|
+                      path = k.split(".").map { |p| "[#{p}]" }.join
+                      event.set(path, v)
+                    end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -385,7 +391,10 @@ data:
 
                 if val
                   meta = JSON.parse(val)
-                  meta.each { |k, v| event.set("[#{k}]", v) }
+                  meta.each do |k, v|
+                      path = k.split(".").map { |p| "[#{p}]" }.join
+                      event.set(path, v)
+                    end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -529,7 +538,10 @@ data:
 
                 if val
                   meta = JSON.parse(val)
-                  meta.each { |k, v| event.set("[#{k}]", v) }
+                  meta.each do |k, v|
+                      path = k.split(".").map { |p| "[#{p}]" }.join
+                      event.set(path, v)
+                    end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -642,7 +654,10 @@ data:
 
                 if val
                   meta = JSON.parse(val)
-                  meta.each { |k, v| event.set("[#{k}]", v) }
+                  meta.each do |k, v|
+                      path = k.split(".").map { |p| "[#{p}]" }.join
+                      event.set(path, v)
+                    end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
