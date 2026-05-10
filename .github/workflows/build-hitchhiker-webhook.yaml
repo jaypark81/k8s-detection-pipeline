@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'hitchhikers/**'
+  workflow_dispatch:
 
 jobs:
   build:
