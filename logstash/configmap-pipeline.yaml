@@ -128,8 +128,7 @@ data:
                   if val
                     meta = JSON.parse(val)
                     meta.each do |k, v|
-                      path = k.split(".").map { |p| "[#{p}]" }.join
-                      event.set(path, v)
+                      event.set("[hitchhiker][k8s][pod][#{k}]", v)
                     end
                   end
                 end
@@ -287,9 +286,8 @@ data:
                 if val
                   meta = JSON.parse(val)
                   meta.each do |k, v|
-                      path = k.split(".").map { |p| "[#{p}]" }.join
-                      event.set(path, v)
-                    end
+                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
+                  end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -392,9 +390,8 @@ data:
                 if val
                   meta = JSON.parse(val)
                   meta.each do |k, v|
-                      path = k.split(".").map { |p| "[#{p}]" }.join
-                      event.set(path, v)
-                    end
+                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
+                  end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -539,9 +536,8 @@ data:
                 if val
                   meta = JSON.parse(val)
                   meta.each do |k, v|
-                      path = k.split(".").map { |p| "[#{p}]" }.join
-                      event.set(path, v)
-                    end
+                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
+                  end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
@@ -655,9 +651,8 @@ data:
                 if val
                   meta = JSON.parse(val)
                   meta.each do |k, v|
-                      path = k.split(".").map { |p| "[#{p}]" }.join
-                      event.set(path, v)
-                    end
+                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
+                  end
                 end
               rescue => e
                 event.tag("hitchhiker_error")
