@@ -35,6 +35,7 @@ jobs:
           tags: ghcr.io/jaypark81/hitchhiker-webhook:${{ steps.vars.outputs.sha }}
 
       - name: Delete old images
+        continue-on-error: true
         uses: actions/delete-package-versions@v5
         with:
           package-name: hitchhiker-webhook
