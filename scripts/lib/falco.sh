@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/lib/common.sh"
-
 install_falco() {
   local env=$1
   log_info "Installing Falco..."

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # shellcheck source=lib/common.sh
-source "$(dirname "$0")/lib/common.sh"
-
 install_storage() {
   log_info "Installing local-path-provisioner..."
 

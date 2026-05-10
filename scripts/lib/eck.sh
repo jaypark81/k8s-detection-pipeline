@@ -109,3 +109,16 @@ apply_ilm() {
         }'
   log_success "ILM policy applied"
 }
+
+copy_es_secret() {
+  local es_password
+  es_password=$(kubectl -n elastic-system get secret siem-es-elastic-user \
+    -o go-template='{{.data.elastic | base64decode}}')
+
+  kubectl create secret generic siem-es-elastic-user \
+    -n hitchhiker \
+    --from-literal=elastic=${es_password} \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  log_success "ES secret copied to hitchhiker namespace"
+}

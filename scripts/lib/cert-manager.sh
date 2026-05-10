@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/lib/common.sh"
-
 CERT_MANAGER_VERSION="v1.20.2"
 
 install_cert_manager() {

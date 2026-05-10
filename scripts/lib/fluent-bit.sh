@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/lib/common.sh"
-
 install_fluent_bit() {
   local env=$1
   local cluster_name=$2

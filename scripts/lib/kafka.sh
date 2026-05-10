@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/lib/common.sh"
-
 TOPICS=(siem-falco siem-tetragon siem-k8s siem-kyverno siem-k8s-audit)
 
 install_kafka() {

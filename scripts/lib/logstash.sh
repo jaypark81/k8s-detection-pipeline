@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/lib/common.sh"
-
 install_logstash() {
   local cluster_name=$1
   log_info "Deploying Logstash..."
