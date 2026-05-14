@@ -43,8 +43,9 @@ spec:
       transaction.state.log.min.isr: 1
       default.replication.factor: 1
       min.insync.replicas: 1
+      log.retention.ms: 1800000
+      log.retention.bytes: 536870912
+      log.retention.check.interval.ms: 60000
   entityOperator:
     topicOperator: {}
     userOperator: {}
-
-    
