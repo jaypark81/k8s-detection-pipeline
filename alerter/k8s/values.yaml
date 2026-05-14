@@ -1,0 +1,3 @@
+alerter:
+  image:
+    tag: "latest"

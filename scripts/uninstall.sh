@@ -14,6 +14,7 @@ source "${SCRIPT_DIR}/lib/hitchhiker.sh"
 source "${SCRIPT_DIR}/lib/fluent-bit.sh"
 source "${SCRIPT_DIR}/lib/logstash.sh"
 source "${SCRIPT_DIR}/lib/cert-manager.sh"
+source "${SCRIPT_DIR}/lib/alerter.sh"
 
 ENV="self-hosted"
 
@@ -49,6 +50,7 @@ fi
 uninstall_logstash
 uninstall_cert_manager
 uninstall_fluent_bit "${ENV}"
+uninstall_alerter
 uninstall_hitchhiker
 uninstall_kafka
 uninstall_falco

@@ -14,6 +14,7 @@ source "${SCRIPT_DIR}/lib/hitchhiker.sh"
 source "${SCRIPT_DIR}/lib/fluent-bit.sh"
 source "${SCRIPT_DIR}/lib/logstash.sh"
 source "${SCRIPT_DIR}/lib/cert-manager.sh"
+source "${SCRIPT_DIR}/lib/alerter.sh"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 ENV=""
@@ -94,6 +95,8 @@ install_fluent_bit "${ENV}" "${CLUSTER_NAME}"
 
 # 7. Logstash
 install_logstash "${CLUSTER_NAME}"
+
+install_alerter
 
 # 8. Lambda (eks only)
 if [[ "${ENV}" == "eks" ]]; then
