@@ -102,44 +102,6 @@ data:
           }
         }
 
-        # Hitchhiker Redis lookup
-        # Falco has no pod uid - use cluster/namespace/pod_name only
-        if [log_parsed][output_fields][k8s.pod.name] and [log_parsed][output_fields][k8s.ns.name] {
-          ruby {
-            code => '
-              require "redis"
-              require "json"
-
-              begin
-                $redis ||= Redis.new(
-                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
-                  port: (ENV["REDIS_PORT"] || 6379).to_i,
-                  timeout: 1
-                )
-
-                cluster  = event.get("[orchestrator][cluster][name]") || "default"
-                ns       = event.get("[log_parsed][output_fields][k8s.ns.name]") ||
-                           event.get("[orchestrator][namespace]")
-                pod_name = event.get("[log_parsed][output_fields][k8s.pod.name]") ||
-                           event.get("[orchestrator][resource][name]")
-
-                if cluster && ns && pod_name
-                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
-                  if val
-                    meta = JSON.parse(val)
-                    meta.each do |k, v|
-                      event.set("[hitchhiker][k8s][pod][#{k}]", v)
-                    end
-                  end
-                end
-              rescue => e
-                event.tag("hitchhiker_error")
-                event.set("[hitchhiker][error]", e.message)
-              end
-            '
-          }
-        }
-
         # Cleanup
         mutate {
           remove_field => ["log", "logtag", "source_type", "[log_parsed]"]
@@ -243,60 +205,6 @@ data:
           rename => { "[stream]" => "[log][iostream]" }
         }
 
-        # Hitchhiker Redis lookup
-        # Tetragon has pod uid - primary uid, fallback cluster/ns/name
-        if [log_parsed][process_exec][process][pod] or
-           [log_parsed][process_exit][process][pod] or
-           [log_parsed][process_kprobe][process][pod] or
-           [log_parsed][process_tracepoint][process][pod] {
-          ruby {
-            code => '
-              require "redis"
-              require "json"
-
-              begin
-                $redis ||= Redis.new(
-                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
-                  port: (ENV["REDIS_PORT"] || 6379).to_i,
-                  timeout: 1
-                )
-
-                cluster = event.get("[orchestrator][cluster][name]") || "default"
-
-                event_type = ["process_exec", "process_exit", "process_kprobe", "process_tracepoint"].find do |t|
-                  event.get("[log_parsed][#{t}][process][pod]")
-                end
-
-                pod_uid  = event.get("[log_parsed][#{event_type}][process][pod][uid]")
-                ns       = event.get("[log_parsed][#{event_type}][process][pod][namespace]")
-                pod_name = event.get("[log_parsed][#{event_type}][process][pod][name]")
-
-                val = nil
-
-                # Primary: uid
-                if pod_uid && !pod_uid.empty?
-                  val = $redis.get("hitchhiker-k8s-#{pod_uid}")
-                end
-
-                # Fallback: cluster/namespace/pod_name
-                if val.nil? && cluster && ns && pod_name
-                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
-                end
-
-                if val
-                  meta = JSON.parse(val)
-                  meta.each do |k, v|
-                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
-                  end
-                end
-              rescue => e
-                event.tag("hitchhiker_error")
-                event.set("[hitchhiker][error]", e.message)
-              end
-            '
-          }
-        }
-
         # Cleanup
         mutate {
           remove_field => ["log", "logtag", "source_type", "[log_parsed]"]
@@ -353,51 +261,6 @@ data:
           rename => {
             "[stream]" => "[log][iostream]"
             "[log]"    => "[message]"
-          }
-        }
-
-        # Hitchhiker Redis lookup - only when pod_id exists
-        if [kubernetes][pod_id] {
-          ruby {
-            code => '
-              require "redis"
-              require "json"
-
-              begin
-                $redis ||= Redis.new(
-                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
-                  port: (ENV["REDIS_PORT"] || 6379).to_i,
-                  timeout: 1
-                )
-
-                cluster  = event.get("[orchestrator][cluster][name]") || "default"
-                ns       = event.get("[orchestrator][namespace]")
-                pod_name = event.get("[orchestrator][resource][name]")
-                pod_id   = event.get("[kubernetes][pod_id]")
-
-                val = nil
-
-                # Primary: uid
-                if pod_id && !pod_id.empty?
-                  val = $redis.get("hitchhiker-k8s-#{pod_id}")
-                end
-
-                # Fallback: cluster/namespace/pod_name
-                if val.nil? && cluster && ns && pod_name
-                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
-                end
-
-                if val
-                  meta = JSON.parse(val)
-                  meta.each do |k, v|
-                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
-                  end
-                end
-              rescue => e
-                event.tag("hitchhiker_error")
-                event.set("[hitchhiker][error]", e.message)
-              end
-            '
           }
         }
 
@@ -510,43 +373,6 @@ data:
           }
         }
 
-        # Hitchhiker Redis lookup
-        # audit log: only meaningful for pods resource with namespace and name
-        if [kubernetes][audit][objectRef][namespace] and
-           [kubernetes][audit][objectRef][name] and
-           [kubernetes][audit][objectRef][resource] == "pods" {
-          ruby {
-            code => '
-              require "redis"
-              require "json"
-
-              begin
-                $redis ||= Redis.new(
-                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
-                  port: (ENV["REDIS_PORT"] || 6379).to_i,
-                  timeout: 1
-                )
-
-                cluster  = event.get("[cluster_name]") || ENV["CLUSTER_NAME"] || "default"
-                ns       = event.get("[kubernetes][audit][objectRef][namespace]")
-                pod_name = event.get("[kubernetes][audit][objectRef][name]")
-
-                val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
-
-                if val
-                  meta = JSON.parse(val)
-                  meta.each do |k, v|
-                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
-                  end
-                end
-              rescue => e
-                event.tag("hitchhiker_error")
-                event.set("[hitchhiker][error]", e.message)
-              end
-            '
-          }
-        }
-
         # Cleanup
         mutate {
           remove_field => [
@@ -617,51 +443,6 @@ data:
           }
         }
 
-        # Hitchhiker Redis lookup - only when pod_id exists
-        if [kubernetes][pod_id] {
-          ruby {
-            code => '
-              require "redis"
-              require "json"
-
-              begin
-                $redis ||= Redis.new(
-                  host: ENV["REDIS_HOST"] || "redis.hitchhiker.svc",
-                  port: (ENV["REDIS_PORT"] || 6379).to_i,
-                  timeout: 1
-                )
-
-                cluster  = event.get("[orchestrator][cluster][name]") || "default"
-                ns       = event.get("[orchestrator][namespace]")
-                pod_name = event.get("[orchestrator][resource][name]")
-                pod_id   = event.get("[kubernetes][pod_id]")
-
-                val = nil
-
-                # Primary: uid
-                if pod_id && !pod_id.empty?
-                  val = $redis.get("hitchhiker-k8s-#{pod_id}")
-                end
-
-                # Fallback: cluster/namespace/pod_name
-                if val.nil? && cluster && ns && pod_name
-                  val = $redis.get("hitchhiker-k8s-#{cluster}/#{ns}/#{pod_name}")
-                end
-
-                if val
-                  meta = JSON.parse(val)
-                  meta.each do |k, v|
-                    event.set("[hitchhiker][k8s][pod][#{k}]", v)
-                  end
-                end
-              rescue => e
-                event.tag("hitchhiker_error")
-                event.set("[hitchhiker][error]", e.message)
-              end
-            '
-          }
-        }
-
         # Cleanup
         mutate {
           remove_field => ["logtag", "source_type", "[log_parsed]"]
@@ -683,6 +464,7 @@ data:
           data_stream_dataset => "falco"
           data_stream_namespace => "siem"
           action => "create"
+          pipeline => "hitchhiker-enrich"
         }
       } else if [event][module] == "tetragon" {
         elasticsearch {
@@ -696,6 +478,7 @@ data:
           data_stream_dataset => "tetragon"
           data_stream_namespace => "siem"
           action => "create"
+          pipeline => "hitchhiker-enrich"
         }
       } else if [event][module] == "kyverno" {
         elasticsearch {
@@ -709,6 +492,7 @@ data:
           data_stream_dataset => "kyverno"
           data_stream_namespace => "siem"
           action => "create"
+          pipeline => "hitchhiker-enrich"
         }
       } else {
         elasticsearch {
@@ -722,6 +506,7 @@ data:
           data_stream_dataset => "kubernetes"
           data_stream_namespace => "siem"
           action => "create"
+          pipeline => "hitchhiker-enrich"
         }
       }
     }

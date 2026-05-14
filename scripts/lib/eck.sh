@@ -15,6 +15,7 @@ install_eck() {
   kubectl apply -f elastic/elasticsearch.yaml
   wait_for_es 600
   apply_ilm
+  apply_enrich
 
   log_info "Deploying Kibana..."
   kubectl apply -f elastic/kibana.yaml
@@ -108,6 +109,104 @@ apply_ilm() {
             }
         }'
   log_success "ILM policy applied"
+}
+
+apply_enrich() {
+  local es_password
+  es_password=$(kubectl -n elastic-system get secret siem-es-elastic-user \
+    -o go-template='{{.data.elastic | base64decode}}')
+
+  local es_url
+  es_url=$(kubectl get service siem-es-http -n elastic-system \
+    -o jsonpath='{.spec.clusterIP}')
+
+  log_info "Creating hitchhikers index..."
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/hitchhikers" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "mappings": {
+        "properties": {
+          "pod_uid": { "type": "keyword" },
+          "pod_key": { "type": "keyword" },
+          "hitchhiker": { "type": "object" }
+        }
+      }
+    }'
+
+  log_info "Creating Enrich policies..."
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/_enrich/policy/hitchhiker-by-uid" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "match": {
+        "indices": "hitchhikers",
+        "match_field": "pod_uid",
+        "enrich_fields": ["k8s"]
+      }
+    }'
+
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/_enrich/policy/hitchhiker-by-key" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "match": {
+        "indices": "hitchhikers",
+        "match_field": "pod_key",
+        "enrich_fields": ["k8s"]
+      }
+    }'
+
+  log_info "Executing Enrich policies..."
+  curl -sk -u "elastic:${es_password}" \
+    -X POST "https://${es_url}:9200/_enrich/policy/hitchhiker-by-uid/_execute"
+
+  curl -sk -u "elastic:${es_password}" \
+    -X POST "https://${es_url}:9200/_enrich/policy/hitchhiker-by-key/_execute"
+
+  log_info "Creating Ingest Pipeline..."
+  curl -sk -u "elastic:${es_password}" \
+    -X PUT "https://${es_url}:9200/_ingest/pipeline/hitchhiker-enrich" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "processors": [
+        {
+          "enrich": {
+            "if": "ctx.kubernetes?.pod_id != null",
+            "policy_name": "hitchhiker-by-uid",
+            "field": "kubernetes.pod_id",
+            "target_field": "hitchhiker",
+            "max_matches": 1,
+            "ignore_missing": true
+          }
+        },
+        {
+          "set": {
+            "if": "ctx.hitchhiker == null && ctx.orchestrator?.cluster?.name != null && ctx.orchestrator?.namespace != null && ctx.orchestrator?.resource?.name != null",
+            "field": "pod_key",
+            "value": "{{orchestrator.cluster.name}}/{{orchestrator.namespace}}/{{orchestrator.resource.name}}"
+          }
+        },
+        {
+          "enrich": {
+            "if": "ctx.hitchhiker == null && ctx.pod_key != null",
+            "policy_name": "hitchhiker-by-key",
+            "field": "pod_key",
+            "target_field": "hitchhiker",
+            "max_matches": 1,
+            "ignore_missing": true
+          }
+        },
+        {
+          "remove": {
+            "field": "pod_key",
+            "ignore_missing": true
+          }
+        }
+      ]
+    }'
+
+  log_success "Enrich pipeline applied"
 }
 
 copy_es_secret() {
