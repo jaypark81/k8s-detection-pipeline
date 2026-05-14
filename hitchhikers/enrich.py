@@ -99,6 +99,8 @@ def enrich(response: dict):
             }
         }
         es.index(index=HITCHHIKER_INDEX, id=uid, document=doc)
+        es.enrich.execute_policy(name="hitchhiker-by-uid")
+        es.enrich.execute_policy(name="hitchhiker-by-key")
         logger.info(f"enriched {namespace}/{name} uid={uid} owner={ownerKind}/{ownerName}")
 
     except Exception as e:
