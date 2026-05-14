@@ -63,6 +63,15 @@ spec:
           env:
             - name: CLUSTER_NAME
               value: "cluster-name"
+            - name: ES_HOST
+              value: "https://siem-es-http.elastic-system.svc:9200"
+            - name: ES_USER
+              value: "elastic"
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: siem-es-elastic-user
+                  key: elastic
           resources:
             requests:
               cpu: "100m"
@@ -123,43 +132,3 @@ spec:
   issuerRef:
     name: hitchhiker-issuer
     kind: Issuer
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-  namespace: hitchhiker
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-        - name: redis
-          image: redis:7-alpine
-          ports:
-            - containerPort: 6379
-          resources:
-            requests:
-              memory: 64Mi
-              cpu: 50m
-            limits:
-              memory: 128Mi
-              cpu: 100m
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-  namespace: hitchhiker
-spec:
-  selector:
-    app: redis
-  ports:
-    - port: 6379
-      targetPort: 6379

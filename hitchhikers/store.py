@@ -1,7 +1,13 @@
 import os
 import logging
-import redis
 from elasticsearch import Elasticsearch
 
 logger = logging.getLogger(__name__)
-r = redis.Redis(host=os.getenv('REDIS_HOST', 'redis.hitchhiker.svc.cluster.local'), port=6379, db=0)
+
+es = Elasticsearch(
+    hosts=[os.getenv('ES_HOST', 'https://siem-es-http.elastic-system.svc:9200')],
+    basic_auth=(os.getenv('ES_USER', 'elastic'), os.getenv('ES_PASSWORD', '')),
+    verify_certs=False
+)
+
+HITCHHIKER_INDEX = 'hitchhikers'

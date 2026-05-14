@@ -3,7 +3,7 @@ import logging
 import time
 import os
 from models import PodMetadata, ContainerMetadata, to_dict, SENSITIVE_HOST_PATHS
-from store import r
+from store import es, HITCHHIKER_INDEX
 from kubernetes import client, config
 
 logger = logging.getLogger(__name__)
@@ -88,8 +88,17 @@ def enrich(response: dict):
             metadata.containers.append(container)
 
         clusterName = os.environ.get('CLUSTER_NAME', 'default')
-        r.set(f'hitchhiker-k8s-{uid}', json.dumps(to_dict(metadata)))
-        r.set(f'hitchhiker-k8s-{clusterName}/{namespace}/{name}', json.dumps(to_dict(metadata)))
+
+        doc = {
+            "pod_uid": uid,
+            "pod_key": f"{clusterName}/{namespace}/{name}",
+            "hitchhiker": {
+                "k8s": {
+                    "pod": to_dict(metadata)
+                }
+            }
+        }
+        es.index(index=HITCHHIKER_INDEX, id=uid, document=doc)
         logger.info(f"enriched {namespace}/{name} uid={uid} owner={ownerKind}/{ownerName}")
 
     except Exception as e:

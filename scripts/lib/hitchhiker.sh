@@ -24,7 +24,6 @@ install_hitchhiker() {
     hitchhikers/k8s/manifests.yaml | kubectl apply -f -
 
   wait_for_rollout deployment hitchhiker-webhook hitchhiker
-  wait_for_pods hitchhiker app=redis 1
   log_success "Hitchhiker deployed (${image})"
 }
 
