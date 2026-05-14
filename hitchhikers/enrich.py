@@ -92,10 +92,8 @@ def enrich(response: dict):
         doc = {
             "pod_uid": uid,
             "pod_key": f"{clusterName}/{namespace}/{name}",
-            "hitchhiker": {
-                "k8s": {
-                    "pod": to_dict(metadata)
-                }
+            "k8s": {
+                "pod": to_dict(metadata)
             }
         }
         es.index(index=HITCHHIKER_INDEX, id=uid, document=doc)
