@@ -21,9 +21,14 @@ def enrich(response: dict):
         name = meta.get('name', '')
         if not uid:
             pod_template_hash = meta.get('labels', {}).get('pod-template-hash', '')
+            job_name = meta.get('labels', {}).get('job-name', '')
             namespace = req.get('namespace', '')
             if pod_template_hash:
                 uid, name = _resolve_uid(pod_template_hash, namespace)
+            elif job_name:
+                uid = meta.get('labels', {}).get('controller-uid', '')
+                if not uid:
+                    uid = f"fallback-{namespace}-{job_name}"
             elif name:
                 uid = _resolve_uid_by_name(name, namespace)
             else:
