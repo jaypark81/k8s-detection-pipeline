@@ -2,6 +2,8 @@ import json
 import logging
 import time
 import os
+import hashlib
+from datetime import datetime, timezone
 from models import PodMetadata, ContainerMetadata, to_dict, SENSITIVE_HOST_PATHS
 from store import es, HITCHHIKER_INDEX
 from kubernetes import client, config
@@ -89,7 +91,11 @@ def enrich(response: dict):
 
         clusterName = os.environ.get('CLUSTER_NAME', 'default')
 
+        if not uid:
+            uid = f"fallback-{clusterName}-{namespace}-{name}"
+
         doc = {
+            "@timestamp": datetime.now(timezone.utc).isoformat(),
             "pod_uid": uid,
             "pod_key": f"{clusterName}/{namespace}/{name}",
             "k8s": {
